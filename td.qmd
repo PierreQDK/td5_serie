@@ -1,0 +1,303 @@
+---
+title: "TD5 : Évaluation de modèles de prévision"
+author: "CADET Timothée, QUINTIN DE KERCADIO Pierre"
+format: pdf
+---
+
+
+# Importation des données et transformation
+
+## Importation
+```{r}
+# Charger le package
+library(readxl)
+
+# Lire le fichier Excel (en supposant qu'il est dans ton répertoire de travail)
+data <- read_excel("wheat_support5_STU.xlsx")
+
+# Aperçu des données
+head(data)
+```
+
+
+## Transformation
+
+```{r}
+library(xts)
+data_xts <- xts(data$return, order.by = as.Date(data$date))
+plot(data_xts, main = "Rendements du blé")
+```
+
+
+# Test des ACF et PACF
+
+## ACF
+
+```{r}
+acf(data_xts, main = "ACF des rendements")
+```
+
+**Interprétation**
+
+L’analyse du graphe de l’autocorrélation des rendements du blé révèle une structure caractérisée par un seul pic significatif au lag 1, qui dépasse nettement les bandes de confiance. Cela traduit une autocorrélation positive et marquée à court terme. En revanche, à partir du lag 2, on observe une chute brutale de l’autocorrélation : les barres restantes sont très faibles et insignifiantes, car elles restent bien en dessous du seuil de significativité. Cette dynamique suggère que la série suit un comportement proche d’un bruit blanc, avec uniquement une faible dépendance immédiate dans le temps.
+
+
+## PACF
+```{r}
+pacf(data_xts, main = "PACF des rendements")
+```
+
+**Interprétation**
+
+Le graphe de la PACF (autocorrélation partielle) des rendements du blé révèle dans l’ensemble une structure peu marquée. Toutefois, trois lags — 14, 17 et 23 — dépassent légèrement les bandes de confiance, suggérant des autocorrélations ponctuellement significatives. Néanmoins, ces dépassements sont isolés et ne suivent aucun schéma régulier ou décroissant. Ils ne traduisent donc pas une dynamique autoregressive persistante.
+
+Dans l’ensemble, la PACF confirme que la série est quasi non autocorrélée, à l’exception de ces quelques pics, probablement dus au bruit ou à des effets transitoires. Ces éléments ne remettent pas en cause le choix d’un modèle AR(1), qui reste le plus adapté et le plus parcimonieux pour capturer la seule dépendance significative observée dans la série (au lag 1 dans l’ACF).
+
+
+
+# Test avec la fonction auto.arima
+```{r}
+library(forecast)
+
+auto.arima(data_xts, max.q = 0, seasonal = FALSE, ic = "bic")
+
+```
+
+**Interprétation**
+
+On a essayé de comparer nos résultats avec la fonction "auto.arima" par rapport à ce qu'on a obtenu précédemment. Cette dernière nous donne un ARIMA(0, 0, 0), ce qui signifie qu'il ne contient ni composantes autorégressives (AR), ni composantes de moyenne mobile (MA), et il n'applique pas de différenciation (d=0). Nous décidons de garder ce que nous avons obtenu précédemment avec AR(1).
+
+
+
+# Rolling  windows
+
+```{r}
+library(forecast)
+# Paramètres
+horizons <- c(1, 5)
+rolling_window_10 <- 10 * 252  # approx 252 jours par an
+rolling_window_3  <- 3 * 252
+
+# Fonction de rolling forecast
+rolling_forecast <- function(series, window_size, h = 1) {
+  n <- length(series)
+  forecasts <- rep(NA, n - window_size - h + 1)
+  actuals <- rep(NA, n - window_size - h + 1)
+  
+  for (i in 1:(n - window_size - h + 1)) {
+    train <- series[i:(i + window_size - 1)]
+    model <- Arima(train, order = c(1, 0, 0))  # AR(1) par défaut
+    forecast_i <- forecast(model, h = h)
+    
+    forecasts[i] <- forecast_i$mean[h]
+    actuals[i] <- series[i + window_size + h - 1]
+  }
+  
+  return(data.frame(actual = actuals, forecast = forecasts))
+}
+
+# Lancer les prévisions
+A10_h1 <- rolling_forecast(data_xts, rolling_window_10, h = 1)
+A3_h1  <- rolling_forecast(data_xts, rolling_window_3, h = 1)
+A10_h5 <- rolling_forecast(data_xts, rolling_window_10, h = 5)
+A3_h5  <- rolling_forecast(data_xts, rolling_window_3, h = 5)
+```
+
+# création marche aléatoire 
+
+```{r}
+## Création de la MA
+random_walk_forecast <- function(ts_data, horizon) {
+ n <- length(ts_data)
+ rw_forecast <- ts_data[(horizon + 1):n]  # Dernière valeur observée
+ return(rw_forecast)
+}
+
+rw_forecast_1 <- random_walk_forecast(data_xts, horizon = 1)
+rw_forecast_5 <- random_walk_forecast(data_xts, horizon = 5)
+
+```
+
+# Mincer-Zarnowitz, calcul de la probabilité critique de chaque modèle
+
+```{r}
+library(lmtest)
+library(sandwich)  # nécessaire pour NeweyWest()
+
+# Fonction de test déjà définie
+test_MZ <- function(actual, forecast) {
+  model <- lm(actual ~ forecast)
+  coeftest(model, vcov = NeweyWest(model))  # erreurs robustes HAC
+}
+
+# Liste des cas à tester
+cat("\nTest de Mincer-Zarnowitz - Résultats :\n")
+
+cat("\n➤ A10 - Horizon 1 :\n")
+print(test_MZ(A10_h1$actual, A10_h1$forecast))
+
+cat("\n➤ A10 - Horizon 5 :\n")
+print(test_MZ(A10_h5$actual, A10_h5$forecast))
+
+cat("\n➤ A3 - Horizon 1 :\n")
+print(test_MZ(A3_h1$actual, A3_h1$forecast))
+
+cat("\n➤ A3 - Horizon 5 :\n")
+print(test_MZ(A3_h5$actual, A3_h5$forecast))
+
+
+```
+
+**Test de Mincer-Zarnowitz**
+
+L'objectif du test de Mincer-Zarnowitz est d'évaluer la qualité des prévisions d'un modèle. Un modèle parfaitement calibré doit avoir un alpha égal à zéro et un coefficient de prévision égal à un. Si l'alpha est différent de zéro, cela indique un biais systématique dans les prévisions. Si le coefficient est inférieur à un, le modèle sous-estime les variations de la variable étudiée, ce qui signifie que les prévisions sont trop conservatrices. Si le coefficient est supérieur à un, le modèle surestime les variations, amplifiant ainsi les mouvements observés. Un modèle efficace doit donc avoir un alpha proche de zéro et un coefficient proche de un afin d'éviter tout biais et de bien refléter la dynamique des données.
+
+
+**Interprétation pour un modèle AR(1)**
+
+**Analyse : modèle sur les 10 dernières années (horizon t+1)**
+
+On observe que l'alpha est très proche de zéro, ce qui est un bon signe. En revanche, pour le coefficient B1, on constate qu'il est significativement différent de 1 (p < 0,05), ce qui indique que les prévisions du modèle sont assez éloignées des valeurs réelles.
+
+               Estimate  Std. Error t value Pr(>|t|)  
+(Intercept) -0.00001682  0.00042520 -0.0396  0.96845  
+forecast    -4.88061660  1.94633718 -2.5076  0.01224 *
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+**Analyse : modèle sur les 10 dernières années (horizon t+5)**
+
+On observe que l'alpha est très proche de zéro, ce qui est un bon signe. En revanche, pour le coefficient B1, on remarque qu'il est significativement différent de 1 (p < 0,05), ce qui indique que les prévisions du modèle sont très éloignées des valeurs réelles, en occurrence, le modèle surestime les variations, amplifiant ainsi les mouvements observés.
+
+
+               Estimate  Std. Error t value Pr(>|t|)
+(Intercept)  5.8526e-05  4.6392e-04  0.1262   0.8996
+forecast    -4.0754e+00  3.4548e+00 -1.1796   0.2383
+
+
+**Analyse : modèle sur les 3 dernières années (horizon t+1)**
+
+On observe que l'alpha est très proche de zéro, ce qui est un bon signe. De plus notre coefficients, est plus proche de 1 que ce qu'on a observé auparavant. Il est négatif donc le modèle sous-estime les variations.
+
+
+               Estimate  Std. Error t value Pr(>|t|)
+(Intercept)  0.00010597  0.00031842  0.3328   0.7393
+forecast    -0.52857642  0.38544174 -1.3714   0.1703
+
+
+**Analyse : modèle sur les 3 dernières années (horizon t+5)**
+
+Pareil que précédemment, on observe que l'alpha est très proche de zéro, ce qui est un bon signe. De plus notre coefficients, est assez proche de 1 que ce qu'on a observé auparavant. Il est négatif donc le modèle sous-estime les variations.
+
+               Estimate  Std. Error t value Pr(>|t|)
+(Intercept)  0.00013234  0.00031827  0.4158   0.6776
+forecast    -1.00416504  0.82403294 -1.2186   0.2231
+
+
+
+# Statistique de Diebold et Mariano avec deux fonctions de pertes 
+
+## Comparaison entre les modèles A10 et A3 (horizon 1)
+
+```{r}
+diebold_mariano_test <- function(actual, f1, f2, loss = "mse") {
+  if (loss == "mse") {
+    d <- (actual - f1)^2 - (actual - f2)^2
+  } else if (loss == "mae") {
+    d <- abs(actual - f1) - abs(actual - f2)
+  } else {
+    stop("Fonction de perte non reconnue.")
+  }
+  
+  dm_model <- lm(d ~ 1)
+  test <- coeftest(dm_model, vcov = NeweyWest(dm_model))
+  return(test)
+}
+
+# Comparaison A10 vs A3 avec horizon 1 
+cat("Diebold-Mariano A10 vs A3 (h=1, MSE) :\n")
+diebold_mariano_test(A10_h1$actual, A10_h1$forecast, A3_h1$forecast, loss = "mse")
+
+```
+**Interprétation**
+
+L’interprétation du test de Diebold-Mariano se fait via la p-value. En effet, si celle-ci est inférieure à 0,05, alors on rejette l’hypothèse nulle : les deux séries sont significativement différentes l’une de l’autre. En revanche, si la p-value est supérieure à 0,05, on ne rejette pas $h0$ et les deux modèles sont statistiquement aussi bons l’un que l’autre.
+Ici, la p-value est de 0,9375, donc l’hypothèse nulle $H0$ ne peut pas être rejetée. Les deux modèles sont par conséquent statistiquement aussi bons l’un que l’autre.
+
+
+## Comparaison entre les modèles A10 et A3 (horizon 5)
+
+```{r}
+# Comparaison A10 vs A3 avec horizon 5
+cat("Diebold-Mariano A10 vs A3 (h=5, MSE) :\n")
+diebold_mariano_test(A10_h5$actual, A10_h5$forecast, A3_h5$forecast, loss = "mse")
+```
+
+**Interprétation**
+
+Ici, la p-value est de 0,2764, donc l’hypothèse nulle $H0$ ne peut pas être rejetée. Les deux modèles sont par conséquent statistiquement aussi bons l’un que l’autre.
+
+
+
+## Comparaison A10 avec la marche aléatoire (horizon 1)
+
+```{r}
+cat("Diebold-Mariano A10 vs marché aléatoire (h=1, MSE) :\n")
+diebold_mariano_test(A10_h1$actual, A10_h1$forecast, rw_forecast_1, loss = "mse")
+```
+
+**Interprétation**
+
+Le test de Diebold-Mariano appliqué au modèle A10 et à la marche aléatoire à l’horizon 1 indique une p-value inférieure à 0,001, ce qui signifie qu’il existe une différence significative de performance entre les deux modèles.
+L’estimate négatif (−0.00041914) montre que le modèle A10 a une erreur quadratique moyenne (MSE) significativement plus faible que celle de la marche aléatoire.
+Autrement dit, le modèle A10 fournit de meilleures prévisions que le modèle naïf.
+
+
+## Comparaison du modèle A10 avec la marche aléatoire (horizon 5)
+```{r}
+cat("Diebold-Mariano A10 vs marché aléatoire (h=5, MSE) :\n")
+diebold_mariano_test(A10_h5$actual, A10_h5$forecast, rw_forecast_5, loss = "mse")
+```
+
+**Interprétation**
+
+Pour ce test, celui ci retourne une p-value < 2.2e−16, ce qui indique une différence statistiquement significative entre les deux modèles.
+L’estimate négatif (−0,00043953) signifie que le MSE du modèle A10 est significativement plus faible que celui de la marche aléatoire.
+Par conséquent, le modèle A10 fournit des prévisions nettement plus précises que la marche aléatoire à l’horizon 5.
+
+
+## Comparaison du modèle A3 avec la marche aléatoire (horizon 5)
+```{r}
+cat("Diebold-Mariano A3 vs marché aléatoire (h=5, MSE) :\n")
+diebold_mariano_test(A3_h5$actual, A3_h5$forecast, rw_forecast_5, loss = "mse")
+```
+
+**Interprétation**
+
+
+Le test ci dessus retourne une p-value < 2.2e−16, ce qui indique une différence statistiquement significative de performance entre les deux modèles.
+L’estimate est négatif (−0,00041816), ce qui montre que le MSE du modèle A3 est significativement plus faible que celui du benchmark naïf.
+Par conséquent, le modèle A3 produit des prévisions nettement plus précises que la marche aléatoire à l’horizon 5.
+
+
+## Comparaison du modèle A3 avec la marche aléatoire (horizon 1)
+```{r}
+cat("Diebold-Mariano A3 vs marché aléatoire (h=1, MSE) :\n")
+diebold_mariano_test(A3_h1$actual, A3_h1$forecast, rw_forecast_1, loss = "mse")
+```
+
+**Interprétation**
+
+Le test de Diebold-Mariano ci dessus retourne une p-value < 2.2e−16, indiquant une différence hautement significative entre les deux modèles.
+La valeur de l’estimate est négative (−0,00040773), ce qui signifie que le modèle A3 présente une erreur quadratique moyenne significativement inférieure à celle de la marche aléatoire.
+Par conséquent, le modèle A3 offre des prévisions bien plus précises que le benchmark naïf à l’horizon 1.
+
+
+# Conclusion 
+
+Les tests de Diebold-Mariano montrent que les modèles A10 et A3 ont des performances prédictives très proches : aucune différence significative n’est observée, que ce soit à l’horizon 1 ou 5.
+En revanche, chacun de ces modèles surpasse largement la marche aléatoire, avec des erreurs quadratiques moyennes significativement plus faibles.
+Cela confirme la capacité des modèles A10 et A3 à produire des prévisions bien plus précises que le benchmark naïf.
+En somme, ces deux modèles sont statistiquement aussi bons l’un que l’autre, et tous deux représentent une amélioration claire par rapport à une stratégie de prévision naïve.
+
+
